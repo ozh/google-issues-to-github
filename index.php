@@ -16,15 +16,18 @@ define( 'GOOGLE', 'yourls' );
 define( 'GITHUB_LOGIN', 'ozh' );
 
 // Your Github repo
-define( 'GITHUB_REPO', 'dummytest' );
+define( 'GITHUB_REPO', 'NotYOURLS' );
 
 // Your Github OAuth token
-define( 'GITHUB_TOKEN', 'xxxxxxxxxxxxxxxxxxxxxxxxxxx' );
+define( 'GITHUB_TOKEN', 'XXXXXX' );
 
 /** Optional config **/
 
-// make sure to set to false for real
-// define( 'DEBUG', true );
+// Output some message so you know what's going on
+define( 'VERBOSE', true );
+
+// Set to false when doing for real
+define( 'DEBUG', true );
 
 // title if an issue on Google has been deleted
 define( 'DELETED_TITLE', 'Deleted issue' );
@@ -36,17 +39,12 @@ define( 'DELETED_BODY', 'This issue was deleted.' );
 define( 'ISSUE_TITLE', '%s' );
 
 // body of issues on Github. This is a sprintf() string, see sprintf_body() if you want to customize
-define( 'ISSUE_BODY', 'This is a "shadow issue" for **Issue %id$s: [%title$s](%issue_href$s)**,
-filed on Google Code before the project was moved on Github.
+define( 'ISSUE_BODY', 'This is a "shadow issue" for **Issue %id$s: [%title$s](%issue_href$s)**, filed on Google Code before the project was [moved on Github](https://github.com/ozh/google-issues-to-github).
 
-Submitted on %published$s by [%author$s](http://code.google.com%author_url$s)  
-Status: %state$s  
-Resolution: %status$s  
+Submitted on %published$s by [%author$s](http://code.google.com%author_url$s)
+Status: %status$s
 
-Please review the original issue and especially its comments.
-**New comments here on this issue will be ignored**.  
-
-Thanks.
+Please review the original issue and especially its comments. **New comments here on this issue will be ignored**. Thanks.
 
 ### Original description
 
@@ -65,7 +63,7 @@ $issues = get_gc_issues( GOOGLE );
 
 $num_issues = count( $issues );
 
-parse( $issues );
+parse_and_migrate( $issues );
 
 // Sprintf the issue body
 function sprintf_body( $string, $array ) {
@@ -116,17 +114,21 @@ function sprintfn( $format, array $args = array() ) {
 
 // Fetch all issues from the Google Project
 function get_gc_issues( $proj ) {
-	$url = "https://code.google.com/feeds/issues/p/${proj}/issues/full?max-results=1&alt=json";
+
+	wtf_is_going_on( 'Fetching issues from Google project ...' );
+
+	$url = "https://code.google.com/feeds/issues/p/${proj}/issues/full?max-results=9999&alt=json";
 	// &published-min=2012-03-12T00:00:00
-	// $url = "./full-6.json";
 	
 	$json = json_decode( file_get_contents( $url ) );
+	
+	wtf_is_going_on( 'Fetched ' . count( $json->feed->entry ) . ' issues !' );
 	
 	return( $json->feed->entry );
 }
 
 // Parse all Google Issues and send them to Github
-function parse( $issues ) {
+function parse_and_migrate( $issues ) {
 	$i = 1;
 	foreach( $issues as $issue ) {
 	
@@ -150,9 +152,10 @@ function parse( $issues ) {
 		// If counter is not sync, it's because there was a missing (deleted) issue on Google : post a dummy one
 		while( $i < $result['id'] ) {
 			$post_this = array(
-				'id' => $i,
+				'id'    => $i,
 				'title' => DELETED_TITLE,
-				'body' => DELETED_BODY,
+				'body'  => DELETED_BODY,
+				'state' => 'closed',
 			);
 			post_to_gh( $post_this );
 			$i++;
@@ -160,9 +163,10 @@ function parse( $issues ) {
 		
 		// Create issue on GH
 		$post_this = array(
-			'id' => $i,
+			'id'    => $i,
 			'title' => sprintf( ISSUE_TITLE, $result['title'] ),
 			'body'  => sprintfn( ISSUE_BODY, $result ),
+			'state' => $result['state'],
 		);
 		post_to_gh( $post_this );
 		$i++;		
@@ -171,39 +175,88 @@ function parse( $issues ) {
 
 // Create an issue on GH
 function post_to_gh( $array ) {
-	/** Debug stuff */
+	/** Debug stuff *
 	$title = $array['title'];
 	$body  = $array['body'];
-	echo $array['id'] . " <b>$title</b>\n";
+	echo $array['id'] . " $title\n";
 	echo "$body\n____________________________________________\n";
 	return;
 	/**/
 	
+	wtf_is_going_on( "Attempting to migrate issue #" . $array['id'] );
+	
 	$api_url = sprintf( 'https://api.github.com/repos/%s/%s/issues?access_token=%s', GITHUB_LOGIN, GITHUB_REPO, GITHUB_TOKEN );
 	
-	// Be nice to server and keep under Github's rate limiting (60 req/min)
-	usleep( 1100000 ); // 1.1 sec
+	// First, create a new issue
+	$json = json_decode( curl_req( 'POST', $api_url, array( 'title' => $array['title'], 'body' => $array['body'] ) ) );
+
+	// Quick check for great success
+	if( !isset( $json->number ) ) {
+		wtf_is_going_on( 'Could not CREATE... Trying again...' );
+		sleep( 5 );
+		$json = json_decode( curl_req( 'POST', $api_url, array( 'title' => $array['title'], 'body' => $array['body'] ) ) );
+		
+		// Still no chance?
+		if( !isset( $json->number ) ) {
+			wtf_is_going_on( 'Could not CREATE... Aborting. :' );
+			var_dump( $json );
+			die( -1 );
+		}
+	}
 	
-	$result = curl_req( $api_url, array( 'title' => $title, 'body' => $body ) );
-	
-	var_dump( $result );
+	$created = $json->number;
+
+	wtf_is_going_on( 'Created issue '. $json->number );
+
+	// Now, patch that issue to close it if needed
+	if( $array['state'] == 'closed' ) {
+
+		wtf_is_going_on( "Attempting to close issue #" . $json->number );
+		sleep( 2 );
+		
+		$api_url = sprintf( 'https://api.github.com/repos/%s/%s/issues/%s?access_token=%s', GITHUB_LOGIN, GITHUB_REPO, $json->number, GITHUB_TOKEN );
+		$json = json_decode( curl_req( 'PATCH', $api_url, array( 'state' => 'closed' ) ) );
+
+		// Quick check for great success
+		if( !isset( $json->number ) ) {
+			// Not sure why, PATCH requests fail more often ...
+			wtf_is_going_on( 'Could not CLOSE... Trying again...' );
+			sleep( 5 );
+			$json = json_decode( curl_req( 'PATCH', $api_url, array( 'state' => 'closed' ) ) );
+			
+			// Nope, definitely didn't work :(
+			if( !isset( $json->number ) ) {
+				wtf_is_going_on( 'Could not CLOSE... Giving up on that one!' );
+				// var_dump( $json );
+				// die( -1 );
+			}
+		}
+		
+		if( isset( $json->number ) )
+			wtf_is_going_on( 'Closed issue '. $json->number );
+	}
+
+	// Die here if there's a issue number mismatch
+	if( $created != $array['id'] ) {
+		wtf_is_going_on( '**** Issue number mismatch. Aborting.' );
+		die( -1 );
+	}
+
+	// Be nice to the server, also reduce chance to timeout
+	sleep( 2 );
 }
 
 
 // CURL request
-function curl_req( $url, $params ) {
+function curl_req( $method, $url, $params ) {
     $ch = curl_init();
     curl_setopt( $ch, CURLOPT_URL, $url );
-    //curl_setopt( $ch, CURLOPT_CUSTOMREQUEST, "POST" );
-    curl_setopt( $ch, CURLOPT_POST, true );
+    curl_setopt( $ch, CURLOPT_CUSTOMREQUEST, $method );
     curl_setopt( $ch, CURLOPT_POSTFIELDS, json_encode( $params ) );  
     curl_setopt( $ch, CURLOPT_RETURNTRANSFER, true );
     curl_setopt( $ch, CURLOPT_CONNECTTIMEOUT, true );
     curl_setopt( $ch, CURLOPT_SSL_VERIFYPEER, false );
     curl_setopt( $ch, CURLOPT_HEADER, false );
-    curl_setopt( $ch, CURLOPT_HTTPHEADER, array( 'Content-type: application/json' ) );
-    // curl_setopt( $ch, CURLOPT_USERPWD, "USERNAME:PASSWORD" );
-    // curl_setopt( $ch, CURLOPT_HTTPAUTH, CURLAUTH_BASIC );
     $content = curl_exec( $ch );
     curl_close( $ch );
     return $content;
@@ -211,25 +264,21 @@ function curl_req( $url, $params ) {
 
 // Basic text formatting
 function html_to_md( $text ) {
-	//var_dump( $text );
-
-	// Markdown: 2 spaces at EOL to force line break
-	// $text = str_replace( "\n", "  \n", $text );
-	
-	/**/
 	// Basic MD tags
 	$text = str_replace(
 		array( '<b>', '</b>', '&quot;', '&gt;', '&lt;' ),
 		array( '**',  '**',   '"',      '>',    '<'    ),
 		$text
 	);
-	/**/
-	
-	// < > convert
-	// $text = str_replace( '<', '&lt;', $text );
 	
 	// Ident issue body to display as a pre block
 	$text = '    ' . implode( "\n    ", explode( "\n", $text ) );
 	
 	return $text;
+}
+
+// Output some stuff to check what's going on
+function wtf_is_going_on( $message ) {
+	if( defined( 'VERBOSE' ) && VERBOSE )
+		echo "**** $message\n";
 }
