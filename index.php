@@ -24,7 +24,7 @@ define( 'GITHUB_TOKEN', 'xxxxxxxxxxxxxxxxxxxxxxxxxxx' );
 /** Optional config **/
 
 // make sure to set to false for real
-define( 'DEBUG', false );
+// define( 'DEBUG', true );
 
 // title if an issue on Google has been deleted
 define( 'DELETED_TITLE', 'Deleted issue' );
@@ -35,18 +35,23 @@ define( 'DELETED_BODY', 'This issue was deleted.' );
 // title of issues on Github
 define( 'ISSUE_TITLE', '%s' );
 
-// body of issues on Github. This is a sprintf() string, see post_to_gh() if you want to customize
-define( 'ISSUE_BODY', 'This is a "shadow issue" for **Issue %s: [%s](%s)**, filed on Google Code before the project was moved on Github.
+// body of issues on Github. This is a sprintf() string, see sprintf_body() if you want to customize
+define( 'ISSUE_BODY', 'This is a "shadow issue" for **Issue %id$s: [%title$s](%issue_href$s)**,
+filed on Google Code before the project was moved on Github.
 
-Submitted on %s by [%s](http://code.google.com%s)  
-Status: %s  
-Resolution: %s  
+Submitted on %published$s by [%author$s](http://code.google.com%author_url$s)  
+Status: %state$s  
+Resolution: %status$s  
 
-Please review the original issue and especially its comments. **New comments here on this issue will be ignored**. Thanks.
+Please review the original issue and especially its comments.
+**New comments here on this issue will be ignored**.  
+
+Thanks.
 
 ### Original description
 
-%s');
+%content$s');
+
 
 /**********************************************************************/
 
@@ -62,12 +67,58 @@ $num_issues = count( $issues );
 
 parse( $issues );
 
+// Sprintf the issue body
+function sprintf_body( $string, $array ) {
+	$default = array(
+		'id'          => 0,
+		'published'   => '',
+		'title'       => '',
+		'content'     => '',
+		'issue_href'  => '',
+		'author'      => '',
+		'author_url'  => '',
+		'state'       => '',
+		'status'      => '',
+	);
+	
+	$array = array_merge( $default, $array );
+		
+	return sprintf( $string, $array['id'], $array['title'], $array['issue_href'],
+		$array['published'], $array['author'], $array['author_url'],
+		$array['state'], $array['status'], $array['content'] );
+}
+
+// http://www.php.net/manual/fr/function.sprintf.php#94608
+function sprintfn( $format, array $args = array() ) {
+    // map of argument names to their corresponding sprintf numeric argument value
+    $arg_nums = array_slice(array_flip(array_keys(array(0 => 0) + $args)), 1);
+
+    // find the next named argument. each search starts at the end of the previous replacement.
+    for ($pos = 0; preg_match('/(?<=%)([a-zA-Z_]\w*)(?=\$)/', $format, $match, PREG_OFFSET_CAPTURE, $pos);) {
+        $arg_pos = $match[0][1];
+        $arg_len = strlen($match[0][0]);
+        $arg_key = $match[1][0];
+
+        // programmer did not supply a value for the named argument found in the format string
+        if (! array_key_exists($arg_key, $arg_nums)) {
+            user_error("sprintfn(): Missing argument '${arg_key}'", E_USER_WARNING);
+            return false;
+        }
+
+        // replace the named argument with the corresponding numeric one
+        $format = substr_replace($format, $replace = $arg_nums[$arg_key], $arg_pos, $arg_len);
+        $pos = $arg_pos + strlen($replace); // skip to end of replacement for next iteration
+    }
+
+    return vsprintf($format, array_values($args));
+}
+
 
 // Fetch all issues from the Google Project
 function get_gc_issues( $proj ) {
-	$url = "https://code.google.com/feeds/issues/p/${proj}/issues/full?max-results=9999&alt=json&published-min=2012-03-12T00:00:00";
+	$url = "https://code.google.com/feeds/issues/p/${proj}/issues/full?max-results=1&alt=json";
 	// &published-min=2012-03-12T00:00:00
-	$url = "./full-all.json";
+	// $url = "./full-6.json";
 	
 	$json = json_decode( file_get_contents( $url ) );
 	
@@ -78,6 +129,8 @@ function get_gc_issues( $proj ) {
 function parse( $issues ) {
 	$i = 1;
 	foreach( $issues as $issue ) {
+	
+		$post_this = array();
 		
 		$issue_href = $issue->link[1];
 		$author = $issue->author[0];
@@ -93,35 +146,37 @@ function parse( $issues ) {
 			'state'       => $issue->{'issues$state'}->{'$t'},
 			'status'      => $issue->{'issues$status'}->{'$t'},
 		);
-
+		
 		// If counter is not sync, it's because there was a missing (deleted) issue on Google : post a dummy one
 		while( $i < $result['id'] ) {
-			$temp = array(
+			$post_this = array(
 				'id' => $i,
 				'title' => DELETED_TITLE,
-				'content' => DELETED_BODY,
+				'body' => DELETED_BODY,
 			);
-			post_to_gh( $temp );
+			post_to_gh( $post_this );
 			$i++;
 		}
 		
 		// Create issue on GH
-		post_to_gh( $result );
+		$post_this = array(
+			'id' => $i,
+			'title' => sprintf( ISSUE_TITLE, $result['title'] ),
+			'body'  => sprintfn( ISSUE_BODY, $result ),
+		);
+		post_to_gh( $post_this );
 		$i++;		
 	}
 }
 
 // Create an issue on GH
 function post_to_gh( $array ) {
-	$title = sprintf( ISSUE_TITLE, $array['title'] );
-	
-	$body = sprintf( ISSUE_BODY, $array['id'], $array['title'], $array['issue_href'],
-		$array['published'], $array['author'], $array['author_url'],
-		$array['state'], $array['status'], $array['content'] );
-		
-	/** Debug stuff *
+	/** Debug stuff */
+	$title = $array['title'];
+	$body  = $array['body'];
 	echo $array['id'] . " <b>$title</b>\n";
 	echo "$body\n____________________________________________\n";
+	return;
 	/**/
 	
 	$api_url = sprintf( 'https://api.github.com/repos/%s/%s/issues?access_token=%s', GITHUB_LOGIN, GITHUB_REPO, GITHUB_TOKEN );
@@ -156,20 +211,22 @@ function curl_req( $url, $params ) {
 
 // Basic text formatting
 function html_to_md( $text ) {
+	//var_dump( $text );
+
 	// Markdown: 2 spaces at EOL to force line break
-	$text = str_replace( "\n", "  \n", $text );
+	// $text = str_replace( "\n", "  \n", $text );
 	
-	/*
+	/**/
 	// Basic MD tags
 	$text = str_replace(
 		array( '<b>', '</b>', '&quot;', '&gt;', '&lt;' ),
 		array( '**',  '**',   '"',      '>',    '<'    ),
 		$text
 	);
-	*/
+	/**/
 	
 	// < > convert
-	$text = str_replace( '<', '&lt;', $text );
+	// $text = str_replace( '<', '&lt;', $text );
 	
 	// Ident issue body to display as a pre block
 	$text = '    ' . implode( "\n    ", explode( "\n", $text ) );
