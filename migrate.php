@@ -1,4 +1,3 @@
-<pre>
 <?php
 /** 
  ** Google Issues To Github
@@ -7,26 +6,46 @@
  **
  **/
 
-/** Required config **/
-
+/** Required config **
+ *********************/
+ 
 // Your Google Project name
-define( 'GOOGLE', 'yourls' );
+define( 'GOOGLE', 'superproject' );
 
-// Your Github login
-define( 'GITHUB_LOGIN', 'ozh' );
+// Your Github login name or organisation name
+define( 'GITHUB_LOGIN', 'john' );
 
-// Your Github repo
-define( 'GITHUB_REPO', 'NotYOURLS' );
+// Your Github repo name
+define( 'GITHUB_REPO', 'awesomeproject' );
 
-// Your Github OAuth token
-define( 'GITHUB_TOKEN', 'XXXXXX' );
+// Your Github OAuth token. Refer to the README.
+define( 'GITHUB_TOKEN', '123456789abcdef123456789abcdef' );
 
-/** Optional config **/
+
+/** Optional config **
+ *********************/
+
+// Max issue to retrieve (in case you want to test for instance?)
+// Note: Google limits to 1000. Refer to the doc if you want to migrate more
+define( 'MAX_ISSUES', 9999 );
+
+// Max number of times an API call should be retried before calling quit
+define( 'MAX_ATTEMPT', 3 );
+
+// Define start number of issues (should be the same on Google & Github).
+// Typically, you want 1 here, unless you're resuming after you've migrated the 1000 first issues
+// NOTE: IF YOU EDIT THIS SETTING, YOU MUST ALSO EDIT THE NEXT ONE. Refer to the README for details.
+define( 'ISSUE_START_FROM', 1 );
+
+// Define the 'published-min' parameter to retrieve Google Issues from a given date
+// Typically, you'll want '' (empty string) here, unless you're resuming after 1000 first issues migration
+// NOTE: IF YOU EDIT THIS SETTING, YOU MUST ALSO EDIT THE PREVIOUS ONE. Refer to the README for details.
+define( 'PUBLISHED_MIN', '' );
 
 // Output some message so you know what's going on
 define( 'VERBOSE', true );
 
-// Set to false when doing for real
+// Set to false when doing for real if you have unwanted notices (you shouldn't get any)
 define( 'DEBUG', true );
 
 // title if an issue on Google has been deleted
@@ -35,11 +54,11 @@ define( 'DELETED_TITLE', 'Deleted issue' );
 // body if an issue on Google has been deleted
 define( 'DELETED_BODY', 'This issue was deleted.' );
 
-// title of issues on Github
-define( 'ISSUE_TITLE', '%s' );
+// title of issues on Github. %s will be replaced with the actual issue title.
+define( 'ISSUE_TITLE', '%s [moved]' );
 
-// body of issues on Github. This is a sprintf() string, see sprintf_body() if you want to customize
-define( 'ISSUE_BODY', 'This is a "shadow issue" for **Issue %id$s: [%title$s](%issue_href$s)**, filed on Google Code before the project was [moved on Github](https://github.com/ozh/google-issues-to-github).
+// body of issues on Github. See parse_and_migrate() for the list of available %stuff$s
+define( 'ISSUE_BODY', 'This is a copy of **Issue %id$s: [%title$s](%issue_href$s)**, filed on Google Code before the project was [moved on Github](https://github.com/ozh/google-issues-to-github).
 
 Submitted on %published$s by [%author$s](http://code.google.com%author_url$s)
 Status: %status$s
@@ -50,9 +69,15 @@ Please review the original issue and especially its comments. **New comments her
 
 %content$s');
 
-
 /**********************************************************************/
 
+
+// Check we're running from command line
+if( php_sapi_name() != 'cli' ) {
+	die( 'This script must be invoked from the command line' );
+}
+
+// Debug mode
 if( defined( 'DEBUG' ) && DEBUG ) {
 	error_reporting( E_ALL );
 } else {
@@ -61,32 +86,13 @@ if( defined( 'DEBUG' ) && DEBUG ) {
 
 $issues = get_gc_issues( GOOGLE );
 
-$num_issues = count( $issues );
-
 parse_and_migrate( $issues );
 
-// Sprintf the issue body
-function sprintf_body( $string, $array ) {
-	$default = array(
-		'id'          => 0,
-		'published'   => '',
-		'title'       => '',
-		'content'     => '',
-		'issue_href'  => '',
-		'author'      => '',
-		'author_url'  => '',
-		'state'       => '',
-		'status'      => '',
-	);
-	
-	$array = array_merge( $default, $array );
-		
-	return sprintf( $string, $array['id'], $array['title'], $array['issue_href'],
-		$array['published'], $array['author'], $array['author_url'],
-		$array['state'], $array['status'], $array['content'] );
-}
 
-// http://www.php.net/manual/fr/function.sprintf.php#94608
+/**********************************************************************/
+
+// Better sprintf : replace %blah$s with the value of $array['blah']
+// http://www.php.net/sprintf#94608
 function sprintfn( $format, array $args = array() ) {
     // map of argument names to their corresponding sprintf numeric argument value
     $arg_nums = array_slice(array_flip(array_keys(array(0 => 0) + $args)), 1);
@@ -111,14 +117,16 @@ function sprintfn( $format, array $args = array() ) {
     return vsprintf($format, array_values($args));
 }
 
-
 // Fetch all issues from the Google Project
 function get_gc_issues( $proj ) {
 
 	wtf_is_going_on( 'Fetching issues from Google project ...' );
+	
+	$published = '';
+	if( defined( 'PUBLISHED_MIN' ) && PUBLISHED_MIN )
+		$published = 'published-min=' . PUBLISHED_MIN ;
 
-	$url = "https://code.google.com/feeds/issues/p/${proj}/issues/full?max-results=9999&alt=json";
-	// &published-min=2012-03-12T00:00:00
+	$url = sprintf( 'https://code.google.com/feeds/issues/p/%s/issues/full?max-results=%s&alt=json&%s', $proj, MAX_ISSUES, $published );
 	
 	$json = json_decode( file_get_contents( $url ) );
 	
@@ -129,7 +137,7 @@ function get_gc_issues( $proj ) {
 
 // Parse all Google Issues and send them to Github
 function parse_and_migrate( $issues ) {
-	$i = 1;
+	$i = ISSUE_START_FROM;
 	foreach( $issues as $issue ) {
 	
 		$post_this = array();
@@ -175,75 +183,90 @@ function parse_and_migrate( $issues ) {
 
 // Create an issue on GH
 function post_to_gh( $array ) {
-	/** Debug stuff *
+	/** Debug stuff. Append just a / at the end of the line to enable debug output -> *
 	$title = $array['title'];
 	$body  = $array['body'];
 	echo $array['id'] . " $title\n";
-	echo "$body\n____________________________________________\n";
+	//echo "$body\n____________________________________________\n";
 	return;
 	/**/
 	
-	wtf_is_going_on( "Attempting to migrate issue #" . $array['id'] );
-	
-	$api_url = sprintf( 'https://api.github.com/repos/%s/%s/issues?access_token=%s', GITHUB_LOGIN, GITHUB_REPO, GITHUB_TOKEN );
+	wtf_is_going_on( 'Migrating issue #' . $array['id'] );
 	
 	// First, create a new issue
-	$json = json_decode( curl_req( 'POST', $api_url, array( 'title' => $array['title'], 'body' => $array['body'] ) ) );
-
-	// Quick check for great success
-	if( !isset( $json->number ) ) {
-		wtf_is_going_on( 'Could not CREATE... Trying again...' );
-		sleep( 5 );
+	$api_url = sprintf( 'https://api.github.com/repos/%s/%s/issues?access_token=%s', GITHUB_LOGIN, GITHUB_REPO, GITHUB_TOKEN );
+	
+	$success = false;
+	$attempt = 1;
+	
+	// Try to create the issue till it works, retry as many times as defined
+	while( $success == false && $attempt <= MAX_ATTEMPT ) {
 		$json = json_decode( curl_req( 'POST', $api_url, array( 'title' => $array['title'], 'body' => $array['body'] ) ) );
-		
-		// Still no chance?
 		if( !isset( $json->number ) ) {
-			wtf_is_going_on( 'Could not CREATE... Aborting. :' );
-			var_dump( $json );
-			die( -1 );
+			$attempt++;
+			wtf_is_going_on( sprintf( 'Could not CREATE issue %s ... Try %s', $array['id'], $attempt ) );
+			sleep( 2 * $attempt ); // wait before next try to reduce chances of server overload
+		} else {
+			$success = true;
+			$created = $json->number;
 		}
 	}
 	
-	$created = $json->number;
-
-	wtf_is_going_on( 'Created issue '. $json->number );
+	// Check for great success -- or die.
+	if( !$success ) {
+		wtf_is_going_on( sprintf( 'Could not CREATE issue %s ... ABORTING.', $array['id'] ) );
+		wtf_is_going_on( 'Github server return the following JSON :' );
+		var_dump( $json );
+		die( -1 );		
+	}
+	
+	// Alright !
+	wtf_is_going_on( 'Created issue '. $created );
 
 	// Now, patch that issue to close it if needed
 	if( $array['state'] == 'closed' ) {
-
-		wtf_is_going_on( "Attempting to close issue #" . $json->number );
-		sleep( 2 );
 		
-		$api_url = sprintf( 'https://api.github.com/repos/%s/%s/issues/%s?access_token=%s', GITHUB_LOGIN, GITHUB_REPO, $json->number, GITHUB_TOKEN );
-		$json = json_decode( curl_req( 'PATCH', $api_url, array( 'state' => 'closed' ) ) );
+		// Be nice to the server
+		// sleep( 1 );
 
-		// Quick check for great success
-		if( !isset( $json->number ) ) {
-			// Not sure why, PATCH requests fail more often ...
-			wtf_is_going_on( 'Could not CLOSE... Trying again...' );
-			sleep( 5 );
+		$api_url = sprintf( 'https://api.github.com/repos/%s/%s/issues/%s?access_token=%s', GITHUB_LOGIN, GITHUB_REPO, $created, GITHUB_TOKEN );
+		
+		$success = false;
+		$attempt = 1;
+		
+		// Try to close the issue till it hurts
+		while( $success == false && $attempt <= MAX_ATTEMPT ) {
 			$json = json_decode( curl_req( 'PATCH', $api_url, array( 'state' => 'closed' ) ) );
-			
-			// Nope, definitely didn't work :(
 			if( !isset( $json->number ) ) {
-				wtf_is_going_on( 'Could not CLOSE... Giving up on that one!' );
-				// var_dump( $json );
-				// die( -1 );
+				$attempt++;
+				wtf_is_going_on( sprintf( 'Could not CLOSE issue %s ... Try %s', $created, $attempt ) );
+				sleep( 2 * $attempt );
+			} else {
+				$success = true;
+				$created = $json->number;
 			}
 		}
 		
-		if( isset( $json->number ) )
-			wtf_is_going_on( 'Closed issue '. $json->number );
+		// Check for great success // -- or die.
+		if( !$success ) {
+			wtf_is_going_on( sprintf( 'Could not CLOSE issue %s ... ABORTING.', $created ) );
+			// wtf_is_going_on( 'Github server return the following JSON :' );
+			// var_dump( $json );
+			// die( -1 );		
+		}
+		
+		// Alright!
+		wtf_is_going_on( 'Closed issue '. $json->number );
 	}
-
+	
 	// Die here if there's a issue number mismatch
 	if( $created != $array['id'] ) {
-		wtf_is_going_on( '**** Issue number mismatch. Aborting.' );
+		wtf_is_going_on( sprintf( 'Issue number mismatch! Google is %s, Github is %s. Aborting.', $array['id'], $created ) );
 		die( -1 );
 	}
 
 	// Be nice to the server, also reduce chance to timeout
-	sleep( 2 );
+	sleep( 1 );
 }
 
 
@@ -264,7 +287,7 @@ function curl_req( $method, $url, $params ) {
 
 // Basic text formatting
 function html_to_md( $text ) {
-	// Basic MD tags
+	// Basic HTML tags mostly found in Google Issues
 	$text = str_replace(
 		array( '<b>', '</b>', '&quot;', '&gt;', '&lt;' ),
 		array( '**',  '**',   '"',      '>',    '<'    ),
