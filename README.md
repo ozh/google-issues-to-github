@@ -7,7 +7,7 @@ Command line script written in PHP to migrate issues from a Google Code project 
 2. For every issue, it creates an issue on Github  
 3. If the Issue is closed on Google, it closes it on Github  
 
-**Showcase**: [YOURLS issues](https://github.com/YOURLS/YOURLS/issues?direction=asc&page=1&sort=created&state=closed), migrated from [Google Code](http://code.google.com/p/yourls/issues/list).
+**Showcase**: [YOURLS issues](https://github.com/YOURLS/YOURLS/issues?direction=asc&page=1&sort=created&state=closed), migrated from [Google Code](http://code.google.com/p/yourls/issues/list?can=1&q=).
 
 ## Features
 
